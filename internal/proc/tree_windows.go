@@ -12,6 +12,8 @@ import (
 // command that can't be put in one is killed alone.
 type group struct{ job windows.Handle }
 
+func (group) terminate(*exec.Cmd) bool { return false }
+
 func ownGroup(*exec.Cmd) {}
 
 func (g *group) join(cmd *exec.Cmd) {

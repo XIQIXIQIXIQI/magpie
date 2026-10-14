@@ -22,6 +22,10 @@ func ownGroup(cmd *exec.Cmd) {
 
 func (group) join(*exec.Cmd) {}
 
+func (group) terminate(cmd *exec.Cmd) bool {
+	return cmd.Process.Signal(syscall.SIGTERM) == nil
+}
+
 // kill ends every process of the group. One signal to the group misses a
 // process being forked as it is sent (macOS): a script that keeps starting
 // others, as a launcher that calls itself does (Cursor's `cursor agent`

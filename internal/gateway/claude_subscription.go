@@ -832,7 +832,7 @@ func (r *subscriptionRun) cliControl(request map[string]any) error {
 func (r *subscriptionRun) claimResume() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.closed || r.resuming || r.segment != nil {
+	if r.closed || r.killed || r.resuming || r.segment != nil {
 		return false
 	}
 	r.resuming = true
@@ -913,7 +913,7 @@ func (b *subscriptionBridge) resume(req *Request, owner string) (*subscriptionRu
 	turn := newUUID()
 	line, _ := json.Marshal(map[string]any{"type": "user", "uuid": turn, "message": map[string]any{"role": "user", "content": renderClaudeTurn(since, req.Tools)}})
 	run.mu.Lock()
-	if run.closed {
+	if run.closed || run.killed {
 		run.mu.Unlock()
 		return nil, nil
 	}
@@ -1253,7 +1253,7 @@ func (b *subscriptionBridge) keepIdle(r *subscriptionRun, key, conv string) bool
 	var drop []*subscriptionRun
 	b.mu.Lock()
 	r.mu.Lock()
-	closed := r.closed
+	closed := r.closed || r.killed
 	r.mu.Unlock()
 	if closed {
 		b.mu.Unlock()
@@ -3506,6 +3506,10 @@ func (r *subscriptionRun) drain() {
 	}
 }
 
+// claudeExitGrace lets Claude Code finish cleanup (including its OAuth
+// refresh lock) before the process tree is forcibly ended (#2195).
+const claudeExitGrace = 5 * time.Second
+
 func (r *subscriptionRun) abort() {
 	r.mu.Lock()
 	t := r.tree
@@ -3518,7 +3522,7 @@ func (r *subscriptionRun) abort() {
 	}
 	r.mu.Unlock()
 	if t != nil {
-		t.Kill()
+		t.Stop(claudeExitGrace)
 	}
 	r.finish()
 }
@@ -3535,7 +3539,8 @@ func (r *subscriptionRun) abortFor(why string) {
 }
 
 // abortAll ends every run, as the gateway stops: they are no terminal's
-// to be interrupted with it.
+// to be interrupted with it. Their grace periods run together, so shutdown
+// waits once rather than for every unresponsive Claude Code in turn.
 func (b *subscriptionBridge) abortAll() {
 	b.mu.Lock()
 	runs := make([]*subscriptionRun, 0, len(b.runs))
@@ -3543,9 +3548,11 @@ func (b *subscriptionBridge) abortAll() {
 		runs = append(runs, run)
 	}
 	b.mu.Unlock()
+	var stopping sync.WaitGroup
 	for _, run := range runs {
-		run.abort()
+		stopping.Go(run.abort)
 	}
+	stopping.Wait()
 }
 
 // lostRun is a run that had a conversation and ended: when, and why.

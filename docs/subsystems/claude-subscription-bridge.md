@@ -290,6 +290,24 @@ A client that drops the images' message without adding text to a result
 goes on only when that message held images alone, no text. A tool result of an image alone (pi-ai's "(see attached image)")
 whose text is replaced by the line is not this shape, and starts anew.
 
+## Ending a run (#2195)
+
+Every bridge abort (`subscriptionRun.abort`), including a turn the client
+leaves that cannot be rewound and an initial or failed reply, gives Claude
+Code up to five seconds to exit (`proc.Tree.Stop`). On Unix, only its leader
+gets SIGTERM: helpers remain available while it cleans up, including any
+OAuth refresh lock it owns. `Tree.Wait` then kills what the leader left
+running. If the leader does not exit in time, the existing process-tree
+kill ends it and its helpers. Concurrent aborts of one run share the same
+grace period. A run being stopped cannot be kept idle or resumed for
+another turn. No bridge lock is held while waiting.
+
+Gateway shutdown (`abortAll`) starts these stops together and waits for
+them, so the grace periods do not add up with the number of runs. Windows
+keeps its immediate job/process kill, and other agents still use
+`Tree.Kill`. Magpie does not remove Claude Code's OAuth locks or refresh
+its tokens itself.
+
 ## Files a run leaves
 
 - Its session: `<config>/projects/<work project>/<session>.jsonl`, for
@@ -410,6 +428,7 @@ carries none.
 
 ```sh
 go test -tags nogui ./internal/claudecode/ -count=1
+go test -race -tags nogui ./internal/proc/ ./internal/gateway/ -run '^(TestTreeStop|TestClaudeAbort)' -count=5
 go test -tags nogui ./internal/gateway/ -run 'ClaudeSubscriptionRunsTheDownloaded|ClaudeSubscriptionWithoutClaudeCode|ClaudeRewritten|LostMedia|ImagesTakenOut|RunLetGoWhenTheClientRewrote|ClaudeSessionTempFiles|ClaudeLetGo|ClaudeSessionFiles|ClaudeOldSessions|ClaudeSubscriptionReplySaysTheAllowance|ClaudeAllowanceHeaders|ClaudeForksAnsweringTheLeadsCalls|ClaudeTurnGivenUpOn|ClaudeToolResultsGivenUpOn|ClaudePromptMarksEarlierTurns|ClaudeHistoryCachedAcrossNewRuns|ClaudeUnloadableSession|ClaudeEndedRunSaysWhy|ClaudeIdle|ClaudeSideQuestion|ClaudeNoRunSaysWhy|ClaudeToolResultsNoRunSaysWhy|ClaudePromptToldUserText|ClaudePromptKeepsInstructions|ClaudeToolResultsGoOnWithTheUsersWords|ClaudeToolResultsKeepInstructions|ToolResultKeepsUserTextSentMidTurn' -count=1
 ```
 
