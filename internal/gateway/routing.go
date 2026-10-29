@@ -589,14 +589,24 @@ type Rest struct {
 	// held every request for 15 minutes or more
 	first bool
 	askAt time.Time
+	// A remote model held only by Retry-After may have recovered there.
+	// One real request checks it each minute; checking holds concurrent asks.
+	remoteCheck bool
+	checking    bool
 }
 
 // asksAt is when r, a key's rest out of its allowance or credit, has it
 // asked again: at once after its first refusal, a minute on when magpie
-// guessed how long it is out, else when it is back. Any other rest asks
+// guessed how long it is out or a remote model can be checked, else when
+// it is back. Any other rest asks
 // when it ends.
 func (r Rest) asksAt(now time.Time) time.Time {
 	switch {
+	case r.checking:
+		if next := now.Add(fallbackCooldown); next.Before(r.Until) {
+			return next
+		}
+		return r.Until
 	case r.first:
 		return now
 	case !r.askAt.IsZero() && r.askAt.Before(r.Until):
@@ -1277,6 +1287,13 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 	r.Key = id
 	if id == c.restID() {
 		r.Model = c.model
+	}
+	// The remote owns its accounts and may lift their rests before this
+	// Retry-After ends (#4202). Recheck through it, leaving its own quota
+	// guards in place. Explicit resets, key limits and user rests still hold.
+	r.remoteCheck = status == http.StatusTooManyRequests && c.p.Account == nil && why == failQuota && r.By == "retry-after" && c.p.OwnQuotaRest(now) <= 0 && remoteModelRest(c, why, header)
+	if r.remoteCheck {
+		r.askAt = now.Add(fallbackCooldown)
 	}
 	r.Probed = probeable(c, r, header, now) && !probeMissed(id, now)
 	restingUntil.Lock()

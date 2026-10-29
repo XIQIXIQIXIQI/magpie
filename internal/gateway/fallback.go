@@ -1100,6 +1100,38 @@ func quotaHeld(cs []candidate) (Rest, time.Time, bool) {
 	return first, back, len(cs) > 0
 }
 
+// quotaHeldForTry reserves a due remote-model check before sending it.
+// quotaHeld also runs while planning, so its read alone must not reserve
+// the check. The last candidate is the only one quotaHeld holds locally.
+func quotaHeldForTry(cs []candidate) (Rest, time.Time, bool, func()) {
+	r, back, held := quotaHeld(cs)
+	if held || len(cs) != 1 {
+		return r, back, held, nil
+	}
+	key := cs[0].restID()
+	restingUntil.Lock()
+	defer restingUntil.Unlock()
+	r, ok := restingUntil.note[key]
+	now := time.Now()
+	if !ok || !r.remoteCheck || !now.Before(restingUntil.m[key]) {
+		return Rest{}, time.Time{}, false, nil
+	}
+	if at := r.asksAt(now); now.Before(at) {
+		return r, at, true, nil
+	}
+	r.checking, r.askAt = true, now.Add(fallbackCooldown)
+	restingUntil.note[key] = r
+	return Rest{}, time.Time{}, false, func() {
+		restingUntil.Lock()
+		defer restingUntil.Unlock()
+		// A success, a new refusal or Try now supersedes this check.
+		if current, ok := restingUntil.note[key]; ok && current.Until.Equal(r.Until) && current.askAt.Equal(r.askAt) {
+			current.checking = false
+			restingUntil.note[key] = current
+		}
+	}
+}
+
 // quotaStatus is a status a vendor says a key is out of its allowance with.
 func quotaStatus(status int) bool {
 	return status == http.StatusTooManyRequests || status == http.StatusPaymentRequired

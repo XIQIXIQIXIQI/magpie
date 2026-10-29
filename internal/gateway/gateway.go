@@ -2937,6 +2937,10 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		// the models Copilot's Auto picked for it, where from, and which
 		// were refused (#256)
 		autoPicked := func() []provider.AutoPick { return nil }
+		rested, back, quotaBlocked, releaseProbe := quotaHeldForTry(cands[i:])
+		if releaseProbe != nil {
+			defer releaseProbe()
+		}
 		if said, ok := verifyHeld(c); ok && last {
 			// the account must be verified first (#152): the agent's
 			// reconnects are told so again, not sent on to a vendor that
@@ -2944,7 +2948,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			held, call.Status, call.Error = true, http.StatusForbidden, said
 			noteMember(hw, r, c.p, c.model)
 			writeError(hw, from, call.Status, said)
-		} else if rested, back, ok := quotaHeld(cands[i:]); ok && last {
+		} else if quotaBlocked && last {
 			// it rests out of its allowance, and so does every key that
 			// was left (#1772: four Ollama Cloud keys out for the week,
 			// each asked again, and refused, on every request): its
@@ -3822,6 +3826,13 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			// from the rests until the first of them is back (#1772)
 			rest := s.restAfterMarked(c, hw.code(), hw.header, hw.errBody(), hw.sharedPool)
 			try.Fail, try.Rest = rest.Why, &rest
+		}
+		if !hw.passing && hw.code() == http.StatusTooManyRequests {
+			if rest, ok := restOf(c.restID()); ok && rest.remoteCheck {
+				// Tell the client when this gateway checks again, not the
+				// remote's stale deadline, or it too waits out the old rest.
+				hw.header.Del("Retry-After")
+			}
 		}
 		if !hw.passing && hw.code() == http.StatusTooManyRequests && hw.header.Get("Retry-After") == "" {
 			// the vendor said nothing of when: the agent is told when
